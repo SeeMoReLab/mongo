@@ -1351,5 +1351,10 @@ error_codes:
   # ErrorCodes::InvalidBSON or ErrorCodes::NonConformantBSON.
   - {code: 525, name: BSONInternalError, categories: [CloseConnectionError]}
 
+  # Chameleon admission control shed the request (src/mongo/db/chameleon). The
+  # SystemOverloadedError category attaches the label the driver treats as
+  # terminal load shedding, the same one the ingress rate limiter uses.
+  - {code: 526, name: ChameleonRejected, categories: [SystemOverloadedError]}
+
   # ^^^^
   # Add new codes, sequentially numbered, above.

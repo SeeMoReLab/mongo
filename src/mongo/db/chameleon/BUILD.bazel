@@ -1,0 +1,77 @@
+load("//bazel:mongo_src_rules.bzl", "idl_generator", "mongo_cc_library", "mongo_cc_unit_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(
+    glob([
+        "*.h",
+        "*.cpp",
+    ]),
+)
+
+# The decision algorithm and its measurement structures: standard library
+# only, shared with the standalone checks and the unit test.
+mongo_cc_library(
+    name = "chameleon_core",
+    srcs = [
+        "level_chooser.cpp",
+        "rung_scorer.cpp",
+        "service_time_histograms.cpp",
+    ],
+    hdrs = [
+        "level_chooser.h",
+        "occupancy_meter.h",
+        "price_controller.h",
+        "replication_rate_bucket.h",
+        "rung_scorer.h",
+        "service_time_histograms.h",
+        "sla_registry.h",
+    ],
+)
+
+idl_generator(
+    name = "chameleon_gen",
+    src = "chameleon.idl",
+)
+
+# The IDL gen and the parameter class definitions live in one library: the
+# gen's REGISTER block references ChameleonSlaTableParameter, so the symbols
+# must resolve within one link unit (same pattern as write_throttler).
+mongo_cc_library(
+    name = "chameleon",
+    srcs = [
+        "chameleon.cpp",
+        "chameleon_request.cpp",
+        ":chameleon_gen",
+    ],
+    hdrs = [
+        "chameleon.h",
+        "chameleon_request.h",
+    ],
+    deps = [
+        ":chameleon_core",
+        "//src/mongo:base",
+        "//src/mongo/db:commands",
+        "//src/mongo/db:server_base",
+        "//src/mongo/db:service_context",
+        "//src/mongo/db:shard_role_api",
+        "//src/mongo/db/commands/server_status:server_status_core",
+        "//src/mongo/db/repl:optime",
+        "//src/mongo/db/repl:read_concern_args",
+        "//src/mongo/db/repl:repl_coordinator_interface",
+    ],
+)
+
+mongo_cc_unit_test(
+    name = "chameleon_test",
+    srcs = [
+        "chameleon_test.cpp",
+    ],
+    tags = ["mongo_unittest_third_group"],
+    deps = [
+        ":chameleon",
+        ":chameleon_core",
+        "//src/mongo/db:service_context_test_fixture",
+        "//src/mongo/unittest",
+    ],
+)

@@ -84,6 +84,7 @@
 #include "mongo/db/shard_role/shard_catalog/operation_sharding_state.h"
 #include "mongo/db/shard_role/shard_role_loop.h"
 #include "mongo/db/shard_role/transaction_resources.h"
+#include "mongo/db/chameleon/chameleon_request.h"
 #include "mongo/db/sharding_environment/shard_id.h"
 #include "mongo/db/sharding_environment/sharding_initialization_waiter.h"
 #include "mongo/db/sharding_environment/sharding_statistics.h"
@@ -1262,7 +1263,13 @@ void RunCommandImpl::_epilogue() {
 
     if (repl::ReadConcernArgs::get(opCtx).getLevel() ==
         repl::ReadConcernLevel::kLinearizableReadConcern) {
-        uassertStatusOK(mongo::waitForLinearizableReadConcern(opCtx, Milliseconds::zero()));
+        // Chameleon bounds the confirmation round and absorbs an expiry as a fallback to the
+        // strongest no-wait level; without an envelope the timeout is zero (stock behavior).
+        auto linStatus = mongo::waitForLinearizableReadConcern(
+            opCtx, chameleon::linearizableWaitTimeout(opCtx));
+        if (!chameleon::absorbLinearizableWaitResult(opCtx, linStatus)) {
+            uassertStatusOK(linStatus);
+        }
     }
 
     if (auto speculativeReadInfo = repl::SpeculativeMajorityReadInfo::get(opCtx);
@@ -1301,6 +1308,7 @@ void RunCommandImpl::_epilogue() {
         opCtx, _ecd->getInvocation()->getGenericArguments(), &commandBodyBob);
     appendClusterAndOperationTime(
         opCtx, &commandBodyBob, &commandBodyBob, _ecd->getStartOperationTime());
+    chameleon::appendReplyEnvelope(opCtx, &commandBodyBob);
 }
 
 void RunCommandImpl::_runImpl() {
@@ -1423,6 +1431,9 @@ void RunCommandAndWaitForWriteConcern::_setup() {
                   fmt::format("unexpected unset provenance on writeConcern: {}",
                               _extractedWriteConcern->toBSON().jsonString()));
 
+        // Chameleon: the chosen (or client-decided) w with the wait bound as wtimeout, applied
+        // to the extracted write concern so _checkWriteConcern's equality assertion holds.
+        chameleon::applyWriteConcern(opCtx, &*_extractedWriteConcern);
         opCtx->setWriteConcern(*_extractedWriteConcern);
         LOGV2_DEBUG(12091301,
                     2,
@@ -1922,6 +1933,10 @@ void ExecCommandDatabase::_initiateCommand() {
                 rss.getPersistenceProvider().supportsReadConcernLevel(readConcernArgs.getLevel()));
     }
 
+    // Chameleon: with an envelope on the request, hold an occupancy slot and (when the server
+    // decides) score the legal levels and rewrite the read concern; may shed the request.
+    chameleon::onInitiateCommand(opCtx, getInvocation(), _execContext.getRequest().body);
+
     uassert(ErrorCodes::InvalidOptions,
             "Command does not support the rawData option",
             !genericArgs.getRawData() || _invocation->supportsRawData() ||
@@ -2183,6 +2198,7 @@ void ExecCommandDatabase::_handleFailure(Status status) {
         }
     }
     appendClusterAndOperationTime(opCtx, &_extraFieldsBuilder, &metadataBob, _startOperationTime);
+    chameleon::appendReplyEnvelope(opCtx, &_extraFieldsBuilder);
 
     const auto logLevel = MONGO_unlikely(TestingProctor::instance().isEnabled()) ? 0 : 1;
     LOGV2_DEBUG(21962,
@@ -2481,6 +2497,9 @@ void HandleRequest::completeOperation(DbResponse& response) {
         response.response.size(),
         executionContext.slowMsOverride,
         executionContext.forceLog);
+
+    // Chameleon: release the occupancy slot, file the wait and exec samples, true up replication.
+    chameleon::onCompleteOperation(opCtx, currentOp);
 
     ServiceLatencyTracker::getDecoration(opCtx->getService())
         .increment(opCtx,

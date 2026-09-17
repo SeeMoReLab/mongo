@@ -3,6 +3,8 @@
 
 #include "mongo/db/service_entry_point_shard_role_helpers.h"
 
+#include "mongo/db/chameleon/chameleon_request.h"
+
 #include "mongo/db/namespace_string_util.h"
 #include "mongo/db/router_role/gossiped_routing_cache_gen.h"
 #include "mongo/db/router_role/routing_cache/catalog_cache.h"
@@ -27,10 +29,18 @@ BSONObj getRedactedCopyForLogging(const Command* command, const BSONObj& cmdObj)
 void waitForReadConcern(OperationContext* opCtx,
                         const CommandInvocation* invocation,
                         const OpMsgRequest& request) {
-    Status rcStatus = mongo::waitForReadConcern(opCtx,
-                                                repl::ReadConcernArgs::get(opCtx),
-                                                invocation->ns().dbName(),
-                                                invocation->allowsAfterClusterTime());
+    Status rcStatus = Status::OK();
+    // Chameleon bounds the wait and falls back to a no-wait level on expiry; without
+    // an envelope on the request this runs the wait unchanged.
+    chameleon::waitForReadConcernBounded(opCtx, [&] {
+        rcStatus = mongo::waitForReadConcern(opCtx,
+                                             repl::ReadConcernArgs::get(opCtx),
+                                             invocation->ns().dbName(),
+                                             invocation->allowsAfterClusterTime());
+        if (ErrorCodes::isExceededTimeLimitError(rcStatus.code())) {
+            uassertStatusOK(rcStatus);
+        }
+    });
 
     if (!rcStatus.isOK()) {
         if (ErrorCodes::isExceededTimeLimitError(rcStatus.code())) {

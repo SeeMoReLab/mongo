@@ -2499,6 +2499,7 @@ mongo_cc_library(
         "//src/mongo:base",
         "//src/mongo/db:commands",
         "//src/mongo/db/admission:app_name_exemption_matcher",
+        "//src/mongo/db/chameleon:chameleon",
         "//src/mongo/db/admission:ingress_admission_control",
         "//src/mongo/db/admission:ingress_request_rate_limiter",
         "//src/mongo/db/admission:write_throttler",
@@ -2604,6 +2605,7 @@ mongo_cc_library(
         # NOTE: If you need to add a static or mongo initializer to mongod startup,
         # please add that library here, as a private library dependency.
         ":landlock_init",
+        "//src/mongo/db/chameleon:chameleon",
         "//src/mongo/executor:async_rpc_error_info",
         "//src/mongo/executor:network_interface_factory",
         "//src/mongo/logv2/log_metric_initializer",

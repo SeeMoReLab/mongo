@@ -19,6 +19,7 @@
 #include "mongo/config.h"  // IWYU pragma: keep
 #include "mongo/db/admission/execution_control/execution_control_init.h"
 #include "mongo/db/admission/flow_control.h"
+#include "mongo/db/chameleon/chameleon.h"
 #include "mongo/db/admission/flow_control_parameters_gen.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/auth_op_observer.h"
@@ -558,6 +559,8 @@ ExitCode _initAndListen(ServiceContext* serviceContext) {
     auto& rss = rss::ReplicatedStorageService::get(serviceContext);
     auto& serviceLifecycle = rss.getServiceLifecycle();
     serviceLifecycle.initializeFlowControl(serviceContext);
+    // Chameleon needs the periodic runner and the replication coordinator, both up by now.
+    chameleon::Chameleon::set(serviceContext, std::make_unique<chameleon::Chameleon>(serviceContext));
 
     // If a crash occurred during file-copy based initial sync, we may need to finish or clean up.
     {
@@ -2004,6 +2007,7 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
         SectionScopedTimer scopedTimer(serviceContext->getFastClockSource(),
                                        TimedSectionId::shutDownFlowControl,
                                        &shutdownTimeElapsedBuilder);
+        chameleon::Chameleon::shutdown(serviceContext);
         FlowControl::shutdown(serviceContext);
     }
 

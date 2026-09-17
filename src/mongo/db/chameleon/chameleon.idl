@@ -1,0 +1,131 @@
+# Chameleon server parameters (MONGODB_PORT.md, Milestone 1). All runtime
+# settable so the workload driver configures the cluster the way its admin
+# RPC configures the Java store.
+global:
+    mod_visibility: public
+    cpp_namespace: "mongo::chameleon"
+    cpp_includes:
+        - "mongo/db/chameleon/chameleon.h"
+
+server_parameters:
+    chameleonEnabled:
+        description: >-
+            Master switch for the Chameleon measurement plane: occupancy meter, service-time
+            histograms, price controller, replication bucket and the $chameleon reply envelope
+            on every request that carries the comment envelope. Off means stock mongod behavior.
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<bool>"
+        cpp_varname: "gChameleonEnabled"
+        default: false
+        redact: false
+    chameleonServerDecision:
+        description: >-
+            When true the server scores and chooses the consistency level (the chameleon arms);
+            when false the client's readConcern and writeConcern are honored as sent (strongest,
+            weakest and pileus arms), with the envelope's wait bound applied.
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<bool>"
+        cpp_varname: "gChameleonServerDecision"
+        default: false
+        redact: false
+    chameleonSMax:
+        description: "Occupancy slot budget S_max (time-weighted requests in flight at the latency knee)."
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<double>"
+        cpp_varname: "gChameleonSMax"
+        default: 1000.0
+        validator: {gt: 0.0}
+        redact: false
+    chameleonReplicationBudgetPerSecond:
+        description: "Replication bucket refill rate in oplog entries per second (primary only)."
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<double>"
+        cpp_varname: "gChameleonReplicationBudgetPerSecond"
+        default: 100000.0
+        validator: {gt: 0.0}
+        redact: false
+    chameleonMaxWaitMs:
+        description: "Clamp on every server-side wait (read concern, linearizable confirmation, write concern acknowledgment)."
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<int>"
+        cpp_varname: "gChameleonMaxWaitMs"
+        default: 500
+        validator: {gte: 1}
+        redact: false
+    chameleonControlIntervalMs:
+        description: "Price control interval and histogram refresh period in milliseconds."
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<int>"
+        cpp_varname: "gChameleonControlIntervalMs"
+        default: 100
+        validator: {gte: 10, lte: 10000}
+        redact: false
+    chameleonUTarget:
+        description: "Utilization target the shadow price regulates toward."
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<double>"
+        cpp_varname: "gChameleonUTarget"
+        default: 0.85
+        validator: {gt: 0.0}
+        redact: false
+    chameleonEta:
+        description: "Multiplicative controller gain: lambda <- max(lambdaMin, lambda * exp(eta * (u - uTarget)))."
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<double>"
+        cpp_varname: "gChameleonEta"
+        default: 0.1
+        validator: {gt: 0.0}
+        redact: false
+    chameleonLambdaMin:
+        description: "Price floor; 0 is the priceless ablation (zero is absorbing under the multiplicative update)."
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<double>"
+        cpp_varname: "gChameleonLambdaMin"
+        default: 0.0001
+        validator: {gte: 0.0}
+        redact: false
+    chameleonHistogramDecay:
+        description: "Service-time histogram decay per control tick, in (0, 1)."
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<double>"
+        cpp_varname: "gChameleonHistogramDecay"
+        default: 0.9
+        validator: {gt: 0.0, lt: 1.0}
+        redact: false
+    chameleonGapEdge1Ms:
+        description: "Upper edge of causal gap bucket 1, in milliseconds of lag the level must close."
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<double>"
+        cpp_varname: "gChameleonGapEdge1Ms"
+        default: 50.0
+        validator: {gt: 0.0}
+        redact: false
+    chameleonGapEdge2Ms:
+        description: "Upper edge of causal gap bucket 2, in milliseconds of lag the level must close."
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<double>"
+        cpp_varname: "gChameleonGapEdge2Ms"
+        default: 200.0
+        validator: {gt: 0.0}
+        redact: false
+    chameleonExecEstimatorMode:
+        description: >-
+            How the execution-time term is estimated per request: 0 = none (the level's wait
+            histogram alone, the Java store's model), 1 = per-shape exec mean shifts the wait CDF,
+            2 = per-shape exec histogram convolved with the wait histogram.
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<int>"
+        cpp_varname: "gChameleonExecEstimatorMode"
+        default: 0
+        validator: {gte: 0, lte: 2}
+        redact: false
+    chameleonSlaTable:
+        description: >-
+            The registered SLAs as a document {read: [{app, sla, rungs: [{strength, latencyMs,
+            profit}]}], write: [...]}; strength is the ReadLevel ordinal for reads and the write
+            concern for writes. Replaces the whole table.
+        set_at: [startup, runtime]
+        cpp_class:
+            name: ChameleonSlaTableParameter
+            override_set: true
+        redact: false
