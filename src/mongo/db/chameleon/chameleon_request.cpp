@@ -426,8 +426,10 @@ void onInitiateCommand(OperationContext* opCtx, const CommandInvocation*, const 
     auto* replCoord = repl::ReplicationCoordinator::get(opCtx);
     state.isPrimary = replCoord && replCoord->getMemberState().primary();
 
-    // Step 5 hard backstop: no free slot against the 1.5 x S_max cap, in every mode.
-    const int hardCap = static_cast<int>(std::ceil(1.5 * gChameleonSMax.load()));
+    // Step 5 hard backstop, in every arm: no free slot against chameleonHardCapInFlight,
+    // the Java store's server.ingressHardCapInFlight pushed by the driver (3 x sMax in the
+    // shipping configs). It bounds in-flight when the price is silenced or overwhelmed.
+    const int hardCap = gChameleonHardCapInFlight.load();
     if (ch->occupancy().inFlight() >= hardCap) {
         rejectRequest(opCtx, state, ch, RejectReason::kOccupancyCap, "occupancy hard cap reached");
     }
@@ -468,9 +470,19 @@ void applyWriteConcern(OperationContext* opCtx, WriteConcernOptions* extracted) 
         const int64_t remainingMs = durationCount<Milliseconds>(remaining) - kWriteConcernDeadlineMarginMs;
         waitMs = std::min<int64_t>(waitMs, std::max<int64_t>(1, remainingMs));
     }
-    WriteConcernOptions wc(state.deliveredWriteConcern,
-                           WriteConcernOptions::SyncMode::UNSET,
-                           Milliseconds(waitMs));
+    // A concern at the write majority goes as w:"majority", not as a count. A set larger
+    // than seven members has non-voting members, which acknowledge a numeric w but do not
+    // count toward the commit point; "majority" waits for a majority of the voters, which
+    // is the commit rule. The reply still reports the count (deliveredWriteConcern).
+    Chameleon* ch = Chameleon::get(opCtx);
+    const bool majorityWrite = ch && state.deliveredWriteConcern >= ch->majority();
+    WriteConcernOptions wc = majorityWrite
+        ? WriteConcernOptions(std::string(WriteConcernOptions::kMajority),
+                              WriteConcernOptions::SyncMode::UNSET,
+                              Milliseconds(waitMs))
+        : WriteConcernOptions(state.deliveredWriteConcern,
+                              WriteConcernOptions::SyncMode::UNSET,
+                              Milliseconds(waitMs));
     wc.getProvenance().setSource(ReadWriteConcernProvenance::Source::clientSupplied);
     *extracted = wc;
 }

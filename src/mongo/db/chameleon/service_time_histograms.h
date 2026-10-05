@@ -13,6 +13,15 @@
  * least (kSnapshotGenerations - 1) refresh ticks after it was read. Requests
  * use a snapshot for microseconds; ticks are 100 ms apart.
  *
+ * Decay forgets only while samples arrive: it rescales every bucket alike, so
+ * a cell nobody samples keeps its shape, and the scorer samples only the level
+ * it chooses (and nothing for a request it rejects). A level that once looked
+ * bad would never be tried again. So a cell is emptied once even its newest
+ * sample has decayed to kStaleWeight of its weight (90 ticks, about 9 s, at
+ * 0.95): it is uncalibrated again, and the cold-start rider cap probes it. A
+ * cell that keeps receiving samples, however rarely, keeps its evidence. The
+ * Java store's ServiceTimeHistograms applies the same rule.
+ *
  * Standard library only.
  */
 #pragma once
@@ -81,6 +90,11 @@ class HistogramCell {
 public:
     static constexpr std::size_t kStripes = 16;
     static constexpr std::size_t kSnapshotGenerations = 8;
+    // A cell is forgotten once its newest sample weighs this little.
+    static constexpr double kStaleWeight = 0.01;
+
+    /** Ticks without a sample after which a cell is emptied: the first n with decay^n <= kStaleWeight. */
+    static int staleTicks(double decay);
 
     HistogramCell();
     HistogramCell(const HistogramCell&) = delete;
@@ -112,6 +126,7 @@ private:
     std::array<double, HistogramSnapshot::kLatencyBuckets> _state{};
     double _stateSum = 0.0;
     double _stateCount = 0.0;
+    int _idleTicks = 0;
     std::array<std::unique_ptr<HistogramSnapshot>, kSnapshotGenerations> _generations;
     std::size_t _nextGeneration = 0;
     std::atomic<const HistogramSnapshot*> _published;

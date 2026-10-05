@@ -212,7 +212,10 @@ Chameleon::Chameleon(ServiceContext* service)
     : _service(service),
       _waitHistograms(CellIndex::numCells(kMaxWriteConcern), gChameleonHistogramDecay.load()),
       _riders(CellIndex::numCells(kMaxWriteConcern)),
-      _price(gChameleonUTarget.load(), gChameleonEta.load(), gChameleonLambdaMin.load()),
+      _price(gChameleonUTarget.load(),
+             gChameleonEta.load(),
+             gChameleonLambdaMin.load(),
+             gChameleonLambdaMax.load()),
       _replicationBucket(gChameleonReplicationBudgetPerSecond.load()) {
     _configuredBudget.store(gChameleonReplicationBudgetPerSecond.load());
     _jobAnchor = service->getPeriodicRunner()->makeJob(
@@ -350,7 +353,10 @@ void Chameleon::tick() {
         double intervalMs = static_cast<double>(interval.intervalNanos) / 1e6;
         double slotMs = static_cast<double>(interval.slotNanos) / 1e6;
         double utilization = slotMs / (gChameleonSMax.load() * intervalMs);
-        _price.reconfigure(gChameleonUTarget.load(), gChameleonEta.load(), gChameleonLambdaMin.load());
+        _price.reconfigure(gChameleonUTarget.load(),
+                           gChameleonEta.load(),
+                           gChameleonLambdaMin.load(),
+                           gChameleonLambdaMax.load());
         _price.update(utilization);
         _lastUtilization.store(utilization, std::memory_order_relaxed);
         _lastAverageInFlight.store(interval.averageInFlight(), std::memory_order_relaxed);
@@ -375,7 +381,10 @@ BSONObj Chameleon::generateSection() const {
     bob.append("inFlightAtClose", _lastInFlightAtClose.load(std::memory_order_relaxed));
     bob.append("inFlight", _occupancy.inFlight());
     bob.append("lambda", _price.lambda());
+    bob.append("lambdaMin", _price.lambdaMin());
+    bob.append("lambdaMax", _price.lambdaMax());
     bob.append("sMax", gChameleonSMax.load());
+    bob.append("hardCapInFlight", gChameleonHardCapInFlight.load());
     bob.append("majority", _majority.load(std::memory_order_relaxed));
     bob.append("entriesPerSecond", _entriesPerSecond.load(std::memory_order_relaxed));
     bob.append("replicationTokens", const_cast<ReplicationRateBucket&>(_replicationBucket).tokensRemaining());

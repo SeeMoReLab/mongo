@@ -1,6 +1,7 @@
 #include "mongo/db/chameleon/chameleon.h"
 #include "mongo/db/chameleon/chameleon_request.h"
 #include "mongo/db/chameleon/level_chooser.h"
+#include "mongo/db/chameleon/price_controller.h"
 #include "mongo/db/chameleon/rung_scorer.h"
 #include "mongo/db/chameleon/service_time_histograms.h"
 
@@ -44,6 +45,47 @@ TEST(ChameleonScorer, WorkedExamplePriceFlipsTheChoice) {
     ASSERT_APPROX_EQUAL(lin.value, 1.68, 1e-9);
 }
 
+// The price is bounded on both sides: the floor lets it leave zero and the ceiling stops
+// windup under sustained overload, so recovery takes log(lambdaMax) rather than never.
+TEST(ChameleonPrice, FloorAndCeilingBoundTheMultiplicativeUpdate) {
+    PriceController price(0.85, 0.1, 1e-4, 1e6);
+    ASSERT_EQ(price.lambda(), 0.0);
+    price.update(0.5);
+    ASSERT_EQ(price.lambda(), 1e-4) << "the floor lifts the price off the absorbing zero";
+    for (int i = 0; i < 100000; ++i) {
+        price.update(18.74);  // the local topology's Flash utilization with in-flight pinned by the cap
+    }
+    ASSERT_EQ(price.lambda(), 1e6) << "sustained overload stops at the ceiling instead of overflowing";
+    ASSERT_TRUE(std::isfinite(price.lambda()));
+    int ticks = 0;
+    while (price.lambda() > 1e-4 && ticks < 10000) {
+        price.update(0.0);
+        ++ticks;
+    }
+    ASSERT_EQ(price.lambda(), 1e-4);
+    // log(1e6 / 1e-4) / (0.1 * 0.85) = 271 intervals: seconds at 100 ms, not the 460 s the
+    // uncapped regional run needed from 1e167.
+    ASSERT_LT(ticks, 300);
+}
+
+TEST(ChameleonPrice, ReconfigureMovesTheBounds) {
+    PriceController price(0.85, 0.1, 1e-4, 1e6);
+    price.forceLambda(500.0);
+    price.reconfigure(0.85, 0.1, 1e-4, 100.0);
+    price.update(0.85);
+    ASSERT_EQ(price.lambda(), 100.0) << "a lowered ceiling clamps the very next update";
+    ASSERT_EQ(price.lambdaMin(), 1e-4);
+    ASSERT_EQ(price.lambdaMax(), 100.0);
+}
+
+TEST(ChameleonPrice, InvertedBoundsAreHeldAtTheCeilingNotFatal) {
+    // The pair is validated by the driver's config loader; the two server parameters land one
+    // at a time, so an inverted pair in between must leave a finite, deterministic price.
+    PriceController price(0.85, 0.1, 10.0, 1.0);
+    price.update(2.0);
+    ASSERT_EQ(price.lambda(), 1.0);
+}
+
 TEST(ChameleonHistograms, DecayAndCdf) {
     HistogramTable table(CellIndex::numCells(3), 0.9);
     const std::size_t cell = CellIndex::read(ReadLevel::kCausalLocal, 1);
@@ -60,6 +102,46 @@ TEST(ChameleonHistograms, DecayAndCdf) {
     ASSERT_APPROX_EQUAL(snapshot->fractionAtMost(5), 0.0, 1e-9);
     table.refreshTick();
     ASSERT_APPROX_EQUAL(table.snapshot(cell)->totalCount(), 810, 1e-6);
+}
+
+TEST(ChameleonHistograms, ACellNobodySamplesIsForgottenOnceItsNewestSampleWeighsOnePercent) {
+    // A level that looked bad once and then stopped being chosen: decay alone
+    // would keep the bad shape forever, since the scorer only samples what it picks.
+    HistogramTable table(CellIndex::numCells(3), 0.95);
+    const std::size_t cell = CellIndex::read(ReadLevel::kLinearizable, 0);
+    const int stale = HistogramCell::staleTicks(0.95);
+    ASSERT_EQ(stale, 90) << "0.95^90 is the first power below 1%";
+    for (int i = 0; i < 100; ++i) {
+        table.file(cell, 400.0);
+    }
+    table.refreshTick();
+    ASSERT_APPROX_EQUAL(table.snapshot(cell)->fractionAtMost(200), 0.0, 1e-9);
+
+    for (int idle = 1; idle < stale; ++idle) {
+        table.refreshTick();
+        ASSERT_GT(table.snapshot(cell)->totalCount(), 0) << "still remembered after " << idle << " idle ticks";
+        ASSERT_APPROX_EQUAL(table.snapshot(cell)->fractionAtMost(200), 0.0, 1e-9);
+    }
+    table.refreshTick();
+    const HistogramSnapshot* snapshot = table.snapshot(cell);
+    ASSERT_TRUE(snapshot->empty()) << "forgotten after staleTicks idle ticks";
+    ASSERT_EQ(snapshot->fractionAtMost(200), 1.0) << "forgotten, the cell is uncalibrated again";
+    ASSERT_EQ(snapshot->meanMs(), 0.0);
+}
+
+TEST(ChameleonHistograms, ACellThatKeepsBeingSampledIsNeverForgotten) {
+    // One sample every 60 ticks: the decayed count drops well below one
+    // sample between them, but the evidence is fresh, so it is kept.
+    HistogramTable table(CellIndex::numCells(3), 0.95);
+    const std::size_t cell = CellIndex::read(ReadLevel::kLinearizable, 0);
+    for (int tick = 0; tick < 600; ++tick) {
+        if (tick % 60 == 0) {
+            table.file(cell, 10.0);
+        }
+        table.refreshTick();
+        ASSERT_GT(table.snapshot(cell)->totalCount(), 0) << "a sampled cell must keep its evidence, tick " << tick;
+    }
+    ASSERT_APPROX_EQUAL(table.snapshot(cell)->meanMs(), 10.0, 1e-9);
 }
 
 TEST(ChameleonChooser, RiderCapFallsToNextLevel) {

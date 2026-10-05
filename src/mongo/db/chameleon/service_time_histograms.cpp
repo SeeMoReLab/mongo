@@ -64,6 +64,10 @@ double HistogramSnapshot::quantileMs(double q) const {
 
 const HistogramSnapshot HistogramCell::kEmptySnapshot{};
 
+int HistogramCell::staleTicks(double decay) {
+    return static_cast<int>(std::ceil(std::log(kStaleWeight) / std::log(decay)));
+}
+
 HistogramCell::HistogramCell() : _published(&kEmptySnapshot) {}
 
 void HistogramCell::atomicAdd(std::atomic<double>& target, double delta) {
@@ -104,6 +108,14 @@ void HistogramCell::refreshTick(double decay) {
     }
     _stateSum = (_stateSum + pendingSum) * decay;
     _stateCount = (_stateCount + pendingCount) * decay;
+    const int stale = staleTicks(decay);
+    _idleTicks = pendingCount > 0 ? 0 : std::min(_idleTicks + 1, stale);
+    if (_idleTicks >= stale && _stateCount > 0) {
+        _state.fill(0.0);
+        cumulative.fill(0.0);
+        _stateSum = 0.0;
+        _stateCount = 0.0;
+    }
     double mean = _stateCount <= 0 ? 0.0 : _stateSum / _stateCount;
 
     auto& slot = _generations[_nextGeneration % kSnapshotGenerations];

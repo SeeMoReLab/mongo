@@ -36,6 +36,18 @@ server_parameters:
         default: 1000.0
         validator: {gt: 0.0}
         redact: false
+    chameleonHardCapInFlight:
+        description: >-
+            Most requests held in flight before a new one is refused at arrival, in every arm
+            (the Java store's server.ingressHardCapInFlight, which the driver pushes here). The
+            backstop when the price is silenced or overwhelmed; the shipping configs set it to
+            3 x sMax. Runs before this parameter existed used a hard-coded 1.5 x sMax.
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<int>"
+        cpp_varname: "gChameleonHardCapInFlight"
+        default: 3000
+        validator: {gte: 1}
+        redact: false
     chameleonReplicationBudgetPerSecond:
         description: "Replication bucket refill rate in oplog entries per second (primary only)."
         set_at: [startup, runtime]
@@ -83,6 +95,18 @@ server_parameters:
         cpp_varname: "gChameleonLambdaMin"
         default: 0.0001
         validator: {gte: 0.0}
+        redact: false
+    chameleonLambdaMax:
+        description: >-
+            Price ceiling (anti-windup): lambda <- min(lambdaMax, max(lambdaMin, ...)). Must exceed
+            chameleonLambdaMin; the pair is validated by the driver's config loader before either is
+            pushed, and the driver pushes the ceiling before the floor. Infinity is absorbing under the
+            multiplicative update, and without the ceiling a 31-minute day sequence reached 1e271.
+        set_at: [startup, runtime]
+        cpp_vartype: "Atomic<double>"
+        cpp_varname: "gChameleonLambdaMax"
+        default: 1000000.0
+        validator: {gt: 0.0}
         redact: false
     chameleonHistogramDecay:
         description: "Service-time histogram decay per control tick, in (0, 1)."
